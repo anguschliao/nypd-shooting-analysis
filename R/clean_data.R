@@ -4,7 +4,7 @@ library (tidyverse)
 
 source("R/download_data.R")
 
-# Inspect raw data ---------------------------------------------------
+# Inspect raw data ------------------------------------------
 
 names(nypd_shooting_raw)
 
@@ -28,14 +28,14 @@ nypd_shooting_raw %>%
   ) %>%
   arrange(desc(missing_values))
 
-# Standardize column names -------------------------------------------
+# Standardize column names ------------------------------------
 
 nypd_shooting_clean <- nypd_shooting_raw %>%
   rename_with(str_to_lower)
 
 names(nypd_shooting_clean)
 
-# Select relevant variables -----------------------------------------
+# Select relevant variables ------------------------------------
 
 nypd_shooting_clean <- nypd_shooting_clean %>%
   select(
@@ -61,7 +61,7 @@ nypd_shooting_clean <- nypd_shooting_clean %>%
     longitude
   )
 
-# Convert date and time variables -----------------------------------
+# Convert date and time variables ------------------------
 
 nypd_shooting_clean <- nypd_shooting_clean %>%
   mutate(
@@ -73,7 +73,7 @@ class(nypd_shooting_clean$occur_date)
 
 class(nypd_shooting_clean$occur_time)
 
-# Standardize categorical variables ---------------------------------
+# Standardize categorical variables ------------------------
 
 nypd_shooting_clean <- nypd_shooting_clean %>%
   mutate(
@@ -94,18 +94,6 @@ nypd_shooting_clean <- nypd_shooting_clean %>%
     )
   )
 
-nypd_shooting_clean <- nypd_shooting_clean %>%
-  mutate(
-    boro = case_when(
-      boro == "bronx" ~ "Bronx",
-      boro == "brooklyn" ~ "Brooklyn",
-      boro == "manhattan" ~ "Manhattan",
-      boro == "queens" ~ "Queens",
-      boro == "staten island" ~ "Staten Island",
-      TRUE ~ str_to_title(boro)
-    )
-  )
-
 # Convert murder indicator ------------------------------------------
 
 nypd_shooting_clean <- nypd_shooting_clean %>%
@@ -114,9 +102,7 @@ nypd_shooting_clean <- nypd_shooting_clean %>%
       as.logical(statistical_murder_flag)
   )
 
-<<<<<<< Updated upstream
-=======
-# Check incident identifiers for duplications ----------------------------------------
+# Check incident identifiers for duplications ---------------------------
 
 nypd_shooting_clean %>%
   count(incident_key) %>%
@@ -132,7 +118,7 @@ nypd_shooting_clean %>%
 
 sum(duplicated(nypd_shooting_clean))
 
-# Check missing analytical variables ------------------------------
+# Check missing numeric variables ------------------------------
 
 nypd_shooting_clean %>%
   summarize(
@@ -223,5 +209,3 @@ nypd_shooting_clean %>%
 
 nypd_shooting_clean %>%
   count(precinct, sort = TRUE)
-
->>>>>>> Stashed changes
