@@ -1,101 +1,5 @@
 library(tidyverse)
 
-# Check overall NY incident trend ----------------------------
-
-monthly_shootings <-
-  nypd_shooting_clean %>%
-  count(
-    year,
-    month_number
-  ) %>%
-  mutate(
-    month_date =
-      make_date(
-        year,
-        month_number,
-        1
-      )
-  )
-
-
-ggplot(
-  monthly_shootings,
-  aes(
-    month_date,
-    n
-  )
-) +
-  geom_line() +
-  labs(
-    x = "Year",
-    y = "Number of shootings"
-  )
-
-# Precinct total incidents for last 3 years
-
-latest_year <- max(
-  nypd_shooting_clean$year,
-  na.rm = TRUE
-)
-
-recent_precinct_counts <-
-  nypd_shooting_clean %>%
-  filter(
-    year >= latest_year - 2
-  ) %>%
-  count(
-    precinct,
-    year
-  )
-
-top_precincts <-
-  recent_precinct_counts %>%
-  group_by(precinct) %>%
-  summarize(
-    total = sum(n),
-    .groups = "drop"
-  ) %>%
-  slice_max(
-    total,
-    n = 15
-  )
-
-precinct_order_2024 <-
-  recent_precinct_counts %>%
-  filter(year == latest_year) %>%
-  arrange(n) %>%
-  pull(precinct)
-
-recent_precinct_counts <-
-  recent_precinct_counts %>%
-  mutate(
-    precinct = factor(
-      precinct,
-      levels = precinct_order_2024
-    )
-  )
-
-
-ggplot(
-  recent_precinct_counts,
-  aes(
-    x = precinct,
-    y = n
-  )
-) +
-  geom_col() +
-  coord_flip() +
-  facet_wrap(~ year) +
-  labs(
-    title = "Shootings by precinct over the last three years",
-    subtitle = paste(
-      "Top precincts ranked by shooting count in",
-      latest_year
-    ),
-    x = "Precinct",
-    y = "Number of shootings"
-  )
-
 # Emerging Hotspot Detection -------------------------------------
 
 # Create historical shooting averages by precinct and year for prior 3 years
@@ -271,8 +175,6 @@ risk_thresholds <-
     ),
     na.rm = TRUE
   )
-
-risk_thresholds
 
 # Assign risk classifications
 
