@@ -362,7 +362,7 @@ meaningful_increase_threshold <-
   as.numeric(
     quantile(
       precinct_monthly$monthly_change,
-      probs = .95,
+      probs = .80,
       na.rm = TRUE
     )
   )
