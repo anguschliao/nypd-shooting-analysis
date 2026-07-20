@@ -1,0 +1,1305 @@
+---
+title: "Predicting Emerging NYPD Shooting Hotspots"
+subtitle: "Exploratory Analysis and Logistic Regression Classification"
+author: A.Liao
+date: July 2026
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 2
+    number_sections: true
+    code_folding: hide
+    code_download: true
+    theme: flatly
+
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+# Package setup: install missing packages ----
+
+required_packages <- c(
+  "tidyverse",
+  "tidymodels",
+  "lubridate",
+  "slider"
+)
+
+installed_packages <- rownames(installed.packages())
+
+missing_packages <- setdiff(
+  required_packages,
+  installed_packages
+)
+
+if (length(missing_packages) > 0) {
+  install.packages(
+    missing_packages,
+    dependencies = TRUE
+  )
+}
+
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(slider)
+
+# Knitr setup ----
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 10,
+  fig.height = 6,
+  out.width = "95%"
+)
+
+```
+
+# Introduction
+
+## Research Objective
+
+The goal of this project is to explore the NYPD shooting dataset and identify opportunties to predict future incidents
+
+The analysis addresses the following questions:
+
+1. Which precincts have experienced the most shooting incidents in recent history and which precincts have demonstrated the largest increase in shooting incidents?
+
+2. Can recent precinct shooting events be modelled to predict future month increases?
+
+## Requirements
+
+Required packages:
+
+- tidyverse
+- tidymodels
+- lubridate
+- slider
+
+# Data
+
+## Data Source
+
+The data used in this project are published by the City of New York.  The NYPD Shooting Incident Data Historic dataset contains one record for each shooting victim and includes details about time, location, perpetrator and victim characteristics.
+
+The dataset may contain multiple records for each incident as it is victim-based and may have multiple victims per incident.
+
+## Reproducible Data Import
+
+All objects used in this report are created when the document is knitted. 
+
+```{r import data}
+# Define data source ----
+
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+# Import data ----
+
+nypd_shooting_raw <- read_csv(
+  url_in,
+  show_col_types = FALSE
+)
+
+```
+
+# Data Preparation
+
+The original dataset had inconsistent lowercase and uppercase usage, string based time variables, and large number of variables, so standardization was required.
+
+## Data Cleaning
+
+The main steps were:
+
+1. Standardize column names using lowercase.
+2. Select relevant variables.
+3. Convert date and time to time format.
+4. Standardize categorical values to lowercase.
+5. inspect duplicate incident keys and fully duplicated rows.
+7. Validate missing values.
+8. Create calendar variables.
+9. Arrange records chronologically.
+
+```{r clean data}
+# Inspect raw data ----
+
+names(nypd_shooting_raw)
+
+dim(nypd_shooting_raw)
+
+head(nypd_shooting_raw)
+
+# Check for missing values ----
+
+nypd_shooting_raw %>%
+  summarize(
+    across(
+      everything(),
+      ~ sum(is.na(.))
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "missing_values"
+  ) %>%
+  arrange(desc(missing_values))
+
+# Standardize column names ----
+
+nypd_shooting_clean <- nypd_shooting_raw %>%
+  rename_with(str_to_lower)
+
+# Select relevant variables ----
+
+nypd_shooting_clean <- nypd_shooting_clean %>%
+  select(
+    incident_key,
+    occur_date,
+    occur_time,
+    boro,
+    precinct,
+    jurisdiction_code,
+    loc_of_occur_desc,
+    loc_classfctn_desc,
+    location_desc,
+    statistical_murder_flag,
+    perp_age_group,
+    perp_sex,
+    perp_race,
+    vic_age_group,
+    vic_sex,
+    vic_race,
+    x_coord_cd,
+    y_coord_cd,
+    latitude,
+    longitude
+  )
+
+# Convert date and time variables ----
+
+nypd_shooting_clean <- nypd_shooting_clean %>%
+  mutate(
+    occur_date = mdy(occur_date),
+    occur_time = hms(occur_time)
+  )
+
+# Standardize categorical variables ----
+
+nypd_shooting_clean <- nypd_shooting_clean %>%
+  mutate(
+    across(
+      c(
+        boro,
+        loc_of_occur_desc,
+        loc_classfctn_desc,
+        location_desc,
+        perp_age_group,
+        perp_sex,
+        perp_race,
+        vic_age_group,
+        vic_sex,
+        vic_race
+      ),
+      str_to_lower
+    )
+  )
+
+# Convert murder indicator ----
+
+nypd_shooting_clean <- nypd_shooting_clean %>%
+  mutate(
+    statistical_murder_flag =
+      as.logical(statistical_murder_flag)
+  )
+
+# Check incident identifiers and duplicates ----
+
+repeated_incident_keys <- nypd_shooting_clean %>%
+  count(incident_key) %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+
+fully_duplicated_rows <- sum(
+  duplicated(nypd_shooting_clean)
+)
+
+# Create calendar variables ----
+
+nypd_shooting_clean <- nypd_shooting_clean %>%
+  mutate(
+    year = year(occur_date),
+    month = month(
+      occur_date,
+      label = TRUE,
+      abbr = FALSE
+    ),
+    month_number = month(occur_date),
+    week = isoweek(occur_date),
+    day_of_week = wday(
+      occur_date,
+      label = TRUE,
+      abbr = FALSE,
+      week_start = 1
+    ),
+    hour = hour(occur_time),
+    weekend = day_of_week %in% c(
+      "Saturday",
+      "Sunday"
+    )
+  )
+
+# Arrange cleaned data ----
+
+nypd_shooting_clean <- nypd_shooting_clean %>%
+  arrange(
+    occur_date,
+    occur_time,
+    incident_key
+  )
+```
+
+## Data Summary
+
+```{r data summary, echo=FALSE}
+cleaned_data_summary <- nypd_shooting_clean %>%
+  summarize(
+    records = n(),
+    unique_incident_keys = n_distinct(incident_key),
+    precincts = n_distinct(precinct, na.rm = TRUE),
+    boroughs = n_distinct(boro, na.rm = TRUE),
+    earliest_date = min(occur_date, na.rm = TRUE),
+    latest_date = max(occur_date, na.rm = TRUE),
+    fatal_shooting_records = sum(
+      statistical_murder_flag,
+      na.rm = TRUE
+    )
+  )
+
+knitr::kable(
+  cleaned_data_summary,
+  col.names = c(
+    "Records",
+    "Unique incident keys",
+    "Precincts",
+    "Boroughs",
+    "Earliest date",
+    "Latest date",
+    "Fatal shooting records"
+  ),
+  caption = "Summary of the cleaned NYPD shooting dataset",
+  format.args = list(
+    big.mark = ","
+  )
+)
+```
+
+## Data Validation
+
+```{r validation, echo=FALSE}
+missing_value_summary <- nypd_shooting_clean %>%
+  summarize(
+    missing_date = sum(is.na(occur_date)),
+    missing_time = sum(is.na(occur_time)),
+    missing_borough = sum(is.na(boro)),
+    missing_precinct = sum(is.na(precinct)),
+    missing_latitude = sum(is.na(latitude)),
+    missing_longitude = sum(is.na(longitude)),
+    fully_duplicated_rows = fully_duplicated_rows
+  )
+
+coordinate_summary <- nypd_shooting_clean %>%
+  summarize(
+    minimum_latitude = min(latitude, na.rm = TRUE),
+    maximum_latitude = max(latitude, na.rm = TRUE),
+    minimum_longitude = min(longitude, na.rm = TRUE),
+    maximum_longitude = max(longitude, na.rm = TRUE)
+  )
+
+knitr::kable(
+  missing_value_summary,
+  col.names = c(
+    "Missing dates",
+    "Missing times",
+    "Missing boroughs",
+    "Missing precincts",
+    "Missing latitudes",
+    "Missing longitudes",
+    "Fully duplicated rows"
+  ),
+  caption = "Missing-value and duplicate-row validation",
+  format.args = list(
+    big.mark = ","
+  )
+)
+
+knitr::kable(
+  coordinate_summary,
+  col.names = c(
+    "Minimum latitude",
+    "Maximum latitude",
+    "Minimum longitude",
+    "Maximum longitude"
+  ),
+  caption = "Observed geographic coordinate ranges",
+  digits = 5
+)
+```
+
+# Exploratory Data Analysis
+
+## Emerging Precinct Hotspots
+
+The first exploratory analysis compares average shootings in a historical three year period 2019–2021 with a recent three year period 2022–2024. Precincts with fewer than 10 average annual shootings during the historical period are excluded to prevent very small baselines from producing misleading percentage increases.
+
+```{r emerging hotspot data}
+# Historical shooting averages by precinct ----
+
+historical_period <-
+  nypd_shooting_clean %>%
+  filter(
+    year >= 2019,
+    year <= 2021,
+    !is.na(precinct)
+  ) %>%
+  count(
+    precinct,
+    year,
+    name = "shootings"
+  ) %>%
+  group_by(precinct) %>%
+  summarize(
+    historical_avg = mean(shootings),
+    .groups = "drop"
+  )
+
+# Recent shooting averages by precinct ----
+
+recent_period <-
+  nypd_shooting_clean %>%
+  filter(
+    year >= 2022,
+    year <= 2024,
+    !is.na(precinct)
+  ) %>%
+  count(
+    precinct,
+    year,
+    name = "shootings"
+  ) %>%
+  group_by(precinct) %>%
+  summarize(
+    recent_avg = mean(shootings),
+    .groups = "drop"
+  )
+
+# Compare recent activity with historical baseline ----
+
+hotspots <-
+  historical_period %>%
+  inner_join(
+    recent_period,
+    by = "precinct"
+  ) %>%
+  filter(
+    historical_avg >= 10
+  ) %>%
+  mutate(
+    shooting_change = recent_avg - historical_avg,
+    percent_change =
+      100 *
+      shooting_change /
+      historical_avg
+  ) %>%
+  arrange(desc(percent_change))
+
+# Select largest percentage increases ----
+
+top_hotspots <-
+  hotspots %>%
+  slice_max(
+    order_by = percent_change,
+    n = 15,
+    with_ties = FALSE
+  ) %>%
+  mutate(
+    precinct = factor(
+      precinct,
+      levels = precinct[
+        order(percent_change)
+      ]
+    )
+  )
+
+```
+
+```{r emerging hotspot plot, fig.cap="Precincts with the largest percentage increases in average annual shooting activity.", echo=FALSE}
+ggplot(
+  top_hotspots,
+  aes(
+    x = precinct,
+    y = percent_change
+  )
+) +
+  geom_col() +
+  geom_text(
+    aes(
+      label = paste0(
+        round(percent_change),
+        "%"
+      )
+    ),
+    hjust = -0.15
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(
+      mult = c(
+        0,
+        0.15
+      )
+    )
+  ) +
+  labs(
+    title = "Top 15 emerging shooting hotspots",
+    subtitle = "Change in average annual shootings: 2022–2024 compared with 2019–2021"
+    ,
+    x = "Precinct",
+    y = "Increase in average annual shootings (%)",
+    caption = "Precincts with fewer than 10 average annual shootings during 2019–2021 were excluded."
+    ) + 
+  theme_minimal()
+```
+
+## Precinct Shooting Risk Classification
+
+This analysis classifies precincts into four risk levels using their average monthly shooting activity during 2024. A complete precinct-month structure is required so months with no recorded shootings are filled in by zero rather than omitted.
+
+Risk classes are based on quartiles of the precinct level distribution:
+
+- Low: below the first quartile
+- Moderate: first to second quartile
+- High: second to third quartile
+- Very High: third quartile or above
+
+```{r precinct risk data}
+# Complete precinct-month shooting counts for 2024 ----
+
+precinct_monthly_risk <-
+  nypd_shooting_clean %>%
+  filter(
+    year == 2024,
+    !is.na(precinct)
+  ) %>%
+  count(
+    precinct,
+    month_number,
+    name = "shootings"
+  ) %>%
+  complete(
+    precinct,
+    month_number = 1:12,
+    fill = list(
+      shootings = 0
+    )
+  )
+
+# Calculate shooting-risk features ----
+
+precinct_risk <-
+  precinct_monthly_risk %>%
+  group_by(precinct) %>%
+  summarize(
+    avg_monthly_shootings = mean(shootings),
+    total_shootings = sum(shootings),
+    max_monthly_shootings = max(shootings),
+    monthly_variability = sd(shootings),
+    .groups = "drop"
+  )
+
+# Calculate quartile thresholds ----
+
+risk_thresholds <-
+  quantile(
+    precinct_risk$avg_monthly_shootings,
+    probs = c(
+      0.25,
+      0.50,
+      0.75
+    ),
+    na.rm = TRUE
+  )
+
+# Assign risk classifications ----
+
+# Assign risk classifications ----
+
+precinct_risk <-
+  precinct_risk %>%
+  mutate(
+    risk_level = case_when(
+      avg_monthly_shootings >= risk_thresholds[3] ~
+        "Very High",
+      avg_monthly_shootings >= risk_thresholds[2] ~
+        "High",
+      avg_monthly_shootings >= risk_thresholds[1] ~
+        "Moderate",
+      TRUE ~
+        "Low"
+    ),
+    risk_level = factor(
+      risk_level,
+      levels = c(
+        "Low",
+        "Moderate",
+        "High",
+        "Very High"
+      )
+    )
+  ) %>%
+  arrange(
+    desc(avg_monthly_shootings)
+  )
+
+risk_classification_summary <-
+  precinct_risk %>%
+  count(
+    risk_level
+  ) %>%
+  mutate(
+    percent = n / sum(n) * 100
+  )
+
+# Select highest-risk precincts for plotting ----
+
+top_risk_precincts <-
+  precinct_risk %>%
+  slice_max(
+    order_by = avg_monthly_shootings,
+    n = 25,
+    with_ties = FALSE
+  ) %>%
+  mutate(
+    precinct = factor(
+      precinct,
+      levels = precinct[
+        order(avg_monthly_shootings)
+      ]
+    )
+  )
+```
+
+```{r precinct risk plot, fig.cap="Average monthly shooting activity and risk classifications for the 25 highest activity precincts in 2024.", echo=FALSE}
+ggplot(
+  top_risk_precincts,
+  aes(
+    x = precinct,
+    y = avg_monthly_shootings,
+    fill = risk_level
+  )
+) +
+  geom_col() +
+  geom_text(
+    aes(
+      label = round(
+        avg_monthly_shootings,
+        1
+      )
+    ),
+    hjust = -0.15
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(
+      mult = c(
+        0,
+        0.12
+      )
+    )
+  ) +
+  labs(
+    title = "Precinct shooting-risk classification for 2024",
+    subtitle = paste(
+      "Risk levels based on average monthly",
+      "shooting activity"
+    ),
+    x = "Precinct",
+    y = "Average monthly shootings",
+    fill = "Risk level",
+    caption = paste(
+      "Risk levels are based on quartiles of",
+      "2024 average monthly shooting activity."
+    )
+  ) +
+  theme_minimal()
+```
+
+## Month-to-Month Shooting Increases
+
+The last exploration examines changes in shooting counts from one month to the next
+
+```{r monthly change data}
+# Create complete precinct-month data ----
+
+precinct_monthly <-
+  nypd_shooting_clean %>%
+  filter(
+    !is.na(precinct),
+    !is.na(year),
+    !is.na(month_number)
+  ) %>%
+  count(
+    precinct,
+    year,
+    month_number,
+    name = "shootings"
+  ) %>%
+  complete(
+    precinct,
+    year = min(year):max(year),
+    month_number = 1:12,
+    fill = list(
+      shootings = 0
+    )
+  ) %>%
+  mutate(
+    month = make_date(
+      year,
+      month_number,
+      1
+    )
+  ) %>%
+  arrange(
+    precinct,
+    month
+  )
+
+# Calculate month-to-month change ----
+
+precinct_monthly <-
+  precinct_monthly %>%
+  group_by(precinct) %>%
+  mutate(
+    monthly_change =
+      shootings -
+      lag(shootings)
+  ) %>%
+  ungroup()
+
+monthly_change_quantiles <- tibble(
+  percentile = c(
+    "50th",
+    "75th",
+    "80th",
+    "90th",
+    "95th",
+    "99th"
+  ),
+  monthly_change = as.numeric(
+    quantile(
+      precinct_monthly$monthly_change,
+      probs = c(
+        0.50,
+        0.75,
+        0.80,
+        0.90,
+        0.95,
+        0.99
+      ),
+      na.rm = TRUE
+    )
+  )
+)
+
+```
+
+```{r monthly change histogram, fig.cap="Distribution of precinct level changes in shooting counts from one month to the next.", echo=FALSE}
+
+ggplot(
+  precinct_monthly,
+  aes(
+    x = monthly_change
+  )
+) +
+  geom_histogram(
+    binwidth = 1
+  ) +
+  labs(
+    title =
+      "Distribution of month-to-month changes in shootings",
+    x = "Change from previous month",
+    y = "Number of precinct-months"
+  ) +
+  theme_minimal()
+```
+
+# Modeling - Logistic Regression
+
+## Model Rationale
+
+The objective of the model is to predict meaningful increases of shooting incidents in future months for any precincts based on recent history.  Logistic regression is appropriate because the target is binary where a precinct-month is classified as either a meaningful increase or no meaningful increase.
+
+The features are constructed using groupings of recent month histories and rolling summaries.
+
+## Feature Engineering
+
+The model uses the following predictors:
+
+- Date
+- Previous month's shooting count
+- Previous month-to-month change
+- Prior three month average
+- Prior six month average
+- Prior three month standard deviation
+
+```{r model feature engineering}
+# Create monthly precinct shooting counts ----
+
+precinct_monthly_model <-
+  nypd_shooting_clean %>%
+  filter(
+    !is.na(precinct),
+    !is.na(boro),
+    !is.na(occur_date)
+  ) %>%
+  count(
+    precinct,
+    boro,
+    year,
+    month_number,
+    name = "shootings"
+  ) %>%
+  mutate(
+    month_date = make_date(
+      year,
+      month_number,
+      1
+    )
+  ) %>%
+  arrange(
+    precinct,
+    month_date
+  )
+
+# Identify monthly range ----
+
+earliest_month <-
+  min(
+    precinct_monthly_model$month_date,
+    na.rm = TRUE
+  )
+
+latest_month <-
+  max(
+    precinct_monthly_model$month_date,
+    na.rm = TRUE
+  )
+
+# Add precinct-months with zero shootings ----
+
+precinct_monthly_model <-
+  precinct_monthly_model %>%
+  select(
+    precinct,
+    boro,
+    month_date,
+    shootings
+  ) %>%
+  complete(
+    nesting(
+      precinct,
+      boro
+    ),
+    month_date = seq.Date(
+      from = earliest_month,
+      to = latest_month,
+      by = "month"
+    ),
+    fill = list(
+      shootings = 0
+    )
+  ) %>%
+  arrange(
+    precinct,
+    month_date
+  )
+
+# Recreate calendar variables ----
+
+precinct_monthly_model <-
+  precinct_monthly_model %>%
+  mutate(
+    year = year(month_date),
+    month_number = factor(
+      month(month_date),
+      levels = 1:12
+    ),
+    precinct = factor(precinct),
+    boro = factor(boro)
+  )
+
+# Create lagged shooting variables ----
+
+precinct_monthly_model <-
+  precinct_monthly_model %>%
+  group_by(precinct) %>%
+  arrange(
+    month_date,
+    .by_group = TRUE
+  ) %>%
+  mutate(
+    previous_month_shootings =
+      lag(
+        shootings,
+        n = 1
+      ),
+    previous_month_change =
+      lag(
+        shootings,
+        n = 1
+      ) -
+      lag(
+        shootings,
+        n = 2
+      ),
+    monthly_change =
+      shootings -
+      previous_month_shootings
+  ) %>%
+  ungroup()
+
+# Create rolling shooting predictors ----
+
+precinct_monthly_model <-
+  precinct_monthly_model %>%
+  group_by(precinct) %>%
+  arrange(
+    month_date,
+    .by_group = TRUE
+  ) %>%
+  mutate(
+    rolling_3_month_average =
+      slide_dbl(
+        lag(
+          shootings,
+          n = 1
+        ),
+        mean,
+        .before = 2,
+        .complete = TRUE
+      ),
+    rolling_6_month_average =
+      slide_dbl(
+        lag(
+          shootings,
+          n = 1
+        ),
+        mean,
+        .before = 5,
+        .complete = TRUE
+      ),
+    rolling_3_month_sd =
+      slide_dbl(
+        lag(
+          shootings,
+          n = 1
+        ),
+        sd,
+        .before = 2,
+        .complete = TRUE
+      )
+  ) %>%
+  ungroup()
+
+# Remove incomplete rolling observations ----
+
+precinct_monthly_model <-
+  precinct_monthly_model %>%
+  filter(
+    !is.na(previous_month_shootings),
+    !is.na(previous_month_change),
+    !is.na(rolling_3_month_average),
+    !is.na(rolling_6_month_average),
+    !is.na(rolling_3_month_sd),
+    !is.na(monthly_change)
+  )
+```
+
+
+## Training and Testing Split
+
+The most recent 24 months were reserved for testing while all earlier records were used for training.  
+The threshold for what is a meaningful increase was set as top 20 percentile of increases using the pareto principle
+
+```{r training testing split}
+# Split training and testing sets ----
+
+number_of_test_months <- 24
+
+test_start_month <-
+  latest_month %m-%
+  months(
+    number_of_test_months - 1
+  )
+
+precinct_training <-
+  precinct_monthly_model %>%
+  filter(
+    month_date < test_start_month
+  )
+
+precinct_testing <-
+  precinct_monthly_model %>%
+  filter(
+    month_date >= test_start_month
+  )
+
+# Calculate threshold using training data only ----
+
+meaningful_increase_threshold_model <-
+  quantile(
+    precinct_training$monthly_change,
+    probs = 0.80,
+    na.rm = TRUE
+  ) %>%
+  unname()
+
+# Create binary outcome ----
+
+precinct_training <-
+  precinct_training %>%
+  mutate(
+    meaningful_increase = factor(
+      if_else(
+        monthly_change >=
+          meaningful_increase_threshold_model,
+        "yes",
+        "no"
+      ),
+      levels = c(
+        "no",
+        "yes"
+      )
+    )
+  )
+
+precinct_testing <-
+  precinct_testing %>%
+  mutate(
+    meaningful_increase = factor(
+      if_else(
+        monthly_change >=
+          meaningful_increase_threshold_model,
+        "yes",
+        "no"
+      ),
+      levels = c(
+        "no",
+        "yes"
+      )
+    )
+  )
+
+training_outcome_distribution <-
+  precinct_training %>%
+  count(
+    meaningful_increase
+  ) %>%
+  mutate(
+    percent =
+      n /
+      sum(n) *
+      100
+  )
+
+knitr::kable(
+  training_outcome_distribution,
+  col.names = c(
+    "Meaningful increase",
+    "Training observations",
+    "Percent"
+  ),
+  caption = "Training outcome distribution",
+  digits = c(0, 0, 1),
+  format.args = list(
+    big.mark = ","
+  )
+)
+```
+
+## Model Recipe
+
+The recipe is initialized with selections on how to handle unknown and zero variance features.  Numerical features were also standardized
+
+```{r logistic regression recipe}
+# Select modeling variables ----
+
+precinct_training_model <-
+  precinct_training %>%
+  select(
+    precinct,
+    boro,
+    month_date,
+    year,
+    month_number,
+    previous_month_shootings,
+    previous_month_change,
+    rolling_3_month_average,
+    rolling_6_month_average,
+    rolling_3_month_sd,
+    meaningful_increase
+  )
+
+precinct_testing_model <-
+  precinct_testing %>%
+  select(
+    precinct,
+    boro,
+    month_date,
+    year,
+    month_number,
+    previous_month_shootings,
+    previous_month_change,
+    rolling_3_month_average,
+    rolling_6_month_average,
+    rolling_3_month_sd,
+    meaningful_increase
+  )
+
+# Create model recipe ----
+
+hotspot_recipe <-
+  recipe(
+    meaningful_increase ~ .,
+    data = precinct_training_model
+  ) %>%
+  update_role(
+    month_date,
+    new_role = "identifier"
+  ) %>%
+  step_unknown(
+    all_nominal_predictors()
+  ) %>%
+  step_dummy(
+    all_nominal_predictors()
+  ) %>%
+  step_zv(
+    all_predictors()
+  ) %>%
+  step_normalize(
+    all_numeric_predictors()
+  )
+```
+
+## Final Model
+
+The logistic regression model and model workflow were initialized
+
+```{r final logistic model}
+# Initialize logistic regression model ----
+
+hotspot_model <-
+  logistic_reg(
+    mode = "classification"
+  ) %>%
+  set_engine("glm")
+
+# Create workflow ----
+
+hotspot_workflow <-
+  workflow() %>%
+  add_recipe(
+    hotspot_recipe
+  ) %>%
+  add_model(
+    hotspot_model
+  )
+
+# Fit model ----
+
+hotspot_fit <-
+  hotspot_workflow %>%
+  fit(
+    data = precinct_training_model
+  )
+```
+
+## Test-Set Predictions
+
+The model was used to make prediction on the 24 month testing period
+
+```{r test set predictions}
+# Generate predicted classes and probabilities ----
+
+hotspot_classes <-
+  predict(
+    hotspot_fit,
+    new_data = precinct_testing_model,
+    type = "class"
+  )
+
+hotspot_probabilities <-
+  predict(
+    hotspot_fit,
+    new_data = precinct_testing_model,
+    type = "prob"
+  )
+
+# Combine observed and predicted outcomes ----s
+
+hotspot_predictions <-
+  precinct_testing_model %>%
+  select(
+    precinct,
+    boro,
+    month_date,
+    meaningful_increase
+  ) %>%
+  bind_cols(
+    hotspot_classes,
+    hotspot_probabilities
+  )
+```
+
+## Confusion Matrix
+
+The performance of the model was evaluated using a confusion matrix matching predicted values against actual observations
+
+```{r confusion matrix, echo=FALSE}
+hotspot_confusion_matrix <-
+  hotspot_predictions %>%
+  conf_mat(
+    truth = meaningful_increase,
+    estimate = .pred_class
+  )
+
+hotspot_confusion_matrix
+```
+
+## Model Performance
+
+```{r model metrics, echo=FALSE}
+hotspot_accuracy <-
+  hotspot_predictions %>%
+  accuracy(
+    truth = meaningful_increase,
+    estimate = .pred_class
+  )
+
+hotspot_precision <-
+  hotspot_predictions %>%
+  precision(
+    truth = meaningful_increase,
+    estimate = .pred_class,
+    event_level = "second"
+  )
+
+hotspot_recall <-
+  hotspot_predictions %>%
+  recall(
+    truth = meaningful_increase,
+    estimate = .pred_class,
+    event_level = "second"
+  )
+
+hotspot_f1 <-
+  hotspot_predictions %>%
+  f_meas(
+    truth = meaningful_increase,
+    estimate = .pred_class,
+    event_level = "second"
+  )
+
+hotspot_roc_auc <-
+  hotspot_predictions %>%
+  roc_auc(
+    truth = meaningful_increase,
+    .pred_yes,
+    event_level = "second"
+  )
+
+hotspot_metrics <-
+  bind_rows(
+    hotspot_accuracy,
+    hotspot_precision,
+    hotspot_recall,
+    hotspot_f1,
+    hotspot_roc_auc
+  ) %>%
+  mutate(
+    .metric = recode(
+      .metric,
+      accuracy = "Accuracy",
+      precision = "Precision",
+      recall = "Recall",
+      f_meas = "F1 score",
+      roc_auc = "ROC AUC"
+    )
+  )
+
+knitr::kable(
+  hotspot_metrics %>%
+    select(
+      .metric,
+      .estimate
+    ),
+  col.names = c(
+    "Metric",
+    "Estimate"
+  ),
+  caption = "Logistic regression performance on the 24 month test period",
+  digits = 3
+)
+```
+
+
+## ROC Curve
+
+The performance of the model was further evaluated using an ROC curve against the 50/50 random classifier
+
+```{r roc curve, fig.cap="Receiver operating characteristic curve for meaningful precinct-month shooting increases.", echo=FALSE}
+hotspot_roc_curve <-
+  hotspot_predictions %>%
+  roc_curve(
+    truth = meaningful_increase,
+    .pred_yes,
+    event_level = "second"
+  )
+
+autoplot(
+  hotspot_roc_curve
+) +
+  labs(
+    title = "ROC curve for meaningful shooting increases",
+  ) +
+  theme_minimal()
+```
+
+For a model that is predicting meaningful increases in shooting events, the most important metrics would be balance of recall (sensitivity) and precision.  High recall would mean fewer true increases would be missed, while high precision would reduce costly false alarms. 
+
+The result of the confusion matrix analysis shows that the model has a 38.6% rate of recall and 58.1% for precision.  While improvement is certainly necessary, given the data and features available as well as the results of the ROC, using this model combined with domain knowledge is drastically better than random deployment of resources.
+
+# Bias Identification
+
+Precinct populations are not included, so the analysis compares raw shooting counts rather than population-adjusted rates.
+
+The model uses historical shooting activity but does not include potentially important predictors such as 911 calls, arrests, weather, public events, or socioeconomic condition 
+
+Logistic regression assumes a linear relationship between predictors and log odds and may not capture complex nonlinear patterns.
+
+Data revisions and delays of reporting will affect the results
+
+# Conclusion
+
+This project developed a reproducible workflow for importing, cleaning, exploring, and modeling NYPD shooting incident data.  The exploratory results identify precincts with rising shooting activity and classify current precinct risk using monthly shooting levels.  A logistic regression model was then trained to predict meaningful monthly increases using rolling historical features.
+
+While the model was only able to achieve 38.6% rate of recall and 58.1% for precision, the concept of the model demonstrates how routinely collected data can be transformed to characterize areas of increased risk as well as potentially predicting emerging risk areas for resource deployment.
+
